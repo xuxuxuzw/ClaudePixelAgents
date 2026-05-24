@@ -115,3 +115,163 @@ React (webview)                        Swift (WKWebView)
 | `LocalServer.swift` | 完全重写：NWListener → Python http.server |
 | `ContentView.swift` | 使用 `WebViewBridge.shared` 单例 |
 | `PixelAgentsApp.swift` | 在 `init()` 中预初始化 WebViewBridge |
+
+---
+
+# Agent 会话检测问题排查与修复记录
+
+## 问题现象
+
+应用构建成功，窗口正常弹出，但 AgentTracker 无法检测到任何 Claude 会话，日志只显示 "Executing command" 后没有后续输出。
+
+## 根本原因
+
+**`claude agents --json` 命令在执行时等待标准输入输入，导致进程阻塞。**
+
+当直接在终端运行应用时：
+1. `Process` 对象的标准输入（stdin）默认连接到终端
+2. `claude agents --json` 命令可能在某些情况下等待输入
+3. `readDataToEndOfFile()` 在等待命令输出，但命令在等待输入
+4. 导致死锁，最终超时
+
+**关键证据**：
+- 使用 `swift run 2>&1 | head -30 &` 运行时正常（stdout 被重定向）
+- 直接在终端运行 `swift run` 或 `.build/debug/ClaudePixelAgents` 时失败
+- 添加超时后显示 "Command timed out"
+
+## 解决方案
+
+### 1. 添加标准输入管道并关闭
+
+```swift
+// AgentTracker.swift — 防止命令等待输入
+let stdin = Pipe()
+task.standardInput = stdin
+
+do {
+    try task.run()
+} catch {
+    NSLog("[AgentTracker] Failed to run claude agents: \(error)")
+    return
+}
+
+// 关闭输入管道（告诉命令没有更多输入）
+stdin.fileHandleForReading.closeFile()
+```
+
+### 2. 添加超时机制
+
+```swift
+// 设置超时（5秒）
+let timeoutItem = DispatchWorkItem { [weak task] in
+    task?.terminate()
+    NSLog("[AgentTracker] Command timed out after 5 seconds")
+}
+DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: timeoutItem)
+
+// 读取输出（必须在waitUntilExit之前）
+let data = stdout.fileHandleForReading.readDataToEndOfFile()
+let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+
+timeoutItem.cancel()
+task.waitUntilExit()
+```
+
+### 3. 修复管道读取顺序
+
+```swift
+// 之前（错误）
+task.waitUntilExit()  // 阻塞等待进程结束
+let data = stdout.fileHandleForReading.readDataToEndOfFile()  // 永远不会执行
+
+// 之后（正确）
+let data = stdout.fileHandleForReading.readDataToEndOfFile()  // 先读取输出
+task.waitUntilExit()  // 再等待进程结束
+```
+
+### 4. 添加详细日志
+
+```swift
+NSLog("[AgentTracker] Checking NVM path: \(nvmPath)")
+NSLog("[AgentTracker] Found Node versions: \(versions)")
+NSLog("[AgentTracker] Checking \(claudeBin): exists=\(exists)")
+NSLog("[AgentTracker] Executing command: \(command)")
+NSLog("[AgentTracker] Process started with PID: \(task.processIdentifier)")
+NSLog("[AgentTracker] claude agents output: \(output.prefix(300))")
+NSLog("[AgentTracker] claude agents stderr: \(errorOutput.prefix(300))")
+NSLog("[AgentTracker] Found \(sessions.count) sessions")
+```
+
+## 附加问题：会话类型过滤
+
+### 问题
+
+最初代码只检测 `kind == "background"` 的会话：
+
+```swift
+guard let sessionId = sessionDict["sessionId"] as? String,
+      let kind = sessionDict["kind"] as? String,
+      kind == "background" else { continue }
+```
+
+导致无法检测到 `interactive` 类型的会话。
+
+### 解决
+
+移除类型过滤，允许检测所有会话类型：
+
+```swift
+guard let sessionId = sessionDict["sessionId"] as? String,
+      let kind = sessionDict["kind"] as? String else { continue }
+// 暂时禁用 background 过滤，允许检测所有会话类型
+// if kind != "background" { continue }
+```
+
+## 涉及修改的文件
+
+| 文件 | 修改内容 |
+|------|---------|
+| `AgentTracker.swift` | 添加 stdin 管道、超时机制、修复管道读取顺序、添加详细日志、移除会话类型过滤 |
+
+## 调试技巧
+
+### 1. 查看系统日志
+
+```bash
+# 查看所有 AgentTracker 日志
+log show --predicate 'process == "ClaudePixelAgents" AND eventMessage CONTAINS "AgentTracker"' --last 5m
+
+# 查看命令执行日志
+log show --predicate 'process == "ClaudePixelAgents" AND eventMessage CONTAINS "Executing command"' --last 5m
+
+# 查看超时日志
+log show --predicate 'process == "ClaudePixelAgents" AND eventMessage CONTAINS "timed out"' --last 5m
+```
+
+### 2. 手动测试 Claude 命令
+
+```bash
+# 测试命令是否正常工作
+/Users/xuzhaowen/.nvm/versions/node/v22.15.0/bin/claude agents --json
+
+# 测试命令执行时间
+time /Users/xuzhaowen/.nvm/versions/node/v22.15.0/bin/claude agents --json > /dev/null 2>&1
+```
+
+### 3. 检查 NVM 路径
+
+```bash
+# 检查 NVM 目录
+ls -la ~/.nvm/versions/node/
+
+# 检查 claude 可执行文件
+ls -la ~/.nvm/versions/node/v22.15.0/bin/claude
+```
+
+## 经验总结
+
+1. **Process 标准输入**：当使用 `Process` 执行命令时，如果命令可能等待输入，必须关闭 stdin 或提供输入
+2. **管道读取顺序**：必须在 `waitUntilExit()` 之前读取输出，否则会死锁
+3. **超时机制**：长时间运行的命令应该添加超时，防止应用无响应
+4. **环境差异**：同一命令在不同环境下行为可能不同（如重定向 vs 直接运行）
+5. **详细日志**：添加足够的日志可以帮助快速定位问题

@@ -73,27 +73,53 @@ class AgentTracker {
             return
         }
 
+        let command = "\(claudePath) agents --json"
+        NSLog("[AgentTracker] Executing command: \(command)")
+
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-l", "-c", "\(claudePath) agents --json"]
+        task.arguments = ["-c", command]
 
         let stdout = Pipe()
         let stderr = Pipe()
         task.standardOutput = stdout
         task.standardError = stderr
 
+        // 添加输入管道（防止命令等待输入）
+        let stdin = Pipe()
+        task.standardInput = stdin
+
         do {
             try task.run()
-            task.waitUntilExit()
-            NSLog("[AgentTracker] claude agents exited with status \(task.terminationStatus)")
+            NSLog("[AgentTracker] Process started with PID: \(task.processIdentifier)")
         } catch {
             NSLog("[AgentTracker] Failed to run claude agents: \(error)")
             return
         }
 
+        // 关闭输入管道（告诉命令没有更多输入）
+        stdin.fileHandleForReading.closeFile()
+
+        // 设置超时（5秒）
+        let timeoutItem = DispatchWorkItem { [weak task] in
+            task?.terminate()
+            NSLog("[AgentTracker] Command timed out after 5 seconds")
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: timeoutItem)
+
+        // 读取输出（必须在waitUntilExit之前）
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+
+        timeoutItem.cancel()
+        task.waitUntilExit()
+        NSLog("[AgentTracker] claude agents exited with status \(task.terminationStatus)")
+
         let output = String(data: data, encoding: .utf8) ?? "nil"
+        let errorOutput = String(data: errorData, encoding: .utf8) ?? "nil"
         NSLog("[AgentTracker] claude agents output: \(output.prefix(300))")
+        NSLog("[AgentTracker] claude agents stderr: \(errorOutput.prefix(300))")
+
         guard let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             NSLog("[AgentTracker] Failed to parse agents JSON")
             return
@@ -104,8 +130,9 @@ class AgentTracker {
 
         for sessionDict in sessions {
             guard let sessionId = sessionDict["sessionId"] as? String,
-                  let kind = sessionDict["kind"] as? String,
-                  kind == "background" else { continue }
+                  let kind = sessionDict["kind"] as? String else { continue }
+            // 暂时禁用 background 过滤，允许检测所有会话类型
+            // if kind != "background" { continue }
 
             currentSessionIds.insert(sessionId)
 
@@ -201,15 +228,25 @@ class AgentTracker {
 
     private func getClaudePath() -> String? {
         let nvmPath = NSHomeDirectory() + "/.nvm/versions/node"
+        NSLog("[AgentTracker] Checking NVM path: \(nvmPath)")
+
         if let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmPath) {
+            NSLog("[AgentTracker] Found Node versions: \(versions)")
             let sorted = versions.sorted().reversed()
             for v in sorted {
                 let claudeBin = "\(nvmPath)/\(v)/bin/claude"
-                if FileManager.default.isExecutableFile(atPath: claudeBin) {
+                let exists = FileManager.default.isExecutableFile(atPath: claudeBin)
+                NSLog("[AgentTracker] Checking \(claudeBin): exists=\(exists)")
+                if exists {
                     return claudeBin
                 }
             }
+        } else {
+            NSLog("[AgentTracker] NVM path not found or cannot read directory")
         }
+
+        // Fallback: try to find claude in PATH
+        NSLog("[AgentTracker] Falling back to 'claude' in PATH")
         return "claude"
     }
 

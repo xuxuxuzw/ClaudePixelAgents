@@ -12,7 +12,43 @@
 
 ---
 
-## 二、用户需求（按时间顺序）
+## 二、快速启动
+
+### 环境要求
+- macOS 14.0+
+- Swift 5.9+
+- 正在运行的 Claude Code 会话（用于自动发现 Agent）
+
+### 启动命令
+
+```bash
+# 进入项目目录
+cd /Users/xuzhaowen/Documents/xiaomimimo_used/ClaudePixelAgents
+
+# 编译并运行
+swift run
+```
+
+应用启动后：
+1. 自动启动本地 HTTP 服务器（端口随机）
+2. 加载像素办公室界面
+3. 轮询并发现正在运行的 Claude 会话
+4. 为每个会话创建对应的像素角色（随机中文名字 + 随机岗位）
+5. 角色状态根据实际会话活动实时更新
+
+### 查看日志
+
+```bash
+# 查看应用日志
+log show --predicate 'process == "ClaudePixelAgents"' --last 10m
+
+# 查看 Agent 轮询状态
+log show --predicate 'process == "ClaudePixelAgents" AND eventMessage CONTAINS "AgentTracker"' --last 5m
+```
+
+---
+
+## 三、用户需求（按时间顺序）
 
 1. "学习 pixel-agents 的 AI 代理构建真实事物的游戏界面，我想自己做一个 Mac 应用"
 2. 选择方案：Swift + WebView（推荐）→ 纯像素办公室游戏界面，不做终端 → 仅 JSONL 轮询
@@ -34,7 +70,7 @@
 
 ---
 
-## 三、项目结构
+## 四、项目结构
 
 ```
 ClaudePixelAgents/
@@ -75,7 +111,7 @@ ClaudePixelAgents/
 
 ---
 
-## 四、各文件详细内容与功能
+## 五、各文件详细内容与功能
 
 ### 4.1 Package.swift
 
@@ -532,7 +568,7 @@ class LocalServer {
 
 ---
 
-## 五、关键架构：传输桥接原理
+## 六、关键架构：传输桥接原理
 
 ### 核心技巧
 
@@ -615,7 +651,7 @@ transport.send({ type: 'webviewReady' });  // React 组件挂载后发送
 
 ---
 
-## 六、白屏问题详细排查记录
+## 七、白屏问题详细排查记录
 
 ### 症状
 - 应用构建成功，运行正常
@@ -741,7 +777,7 @@ index.html 中的 React 打包产物使用了 `<script type="module">` 标签：
 
 ---
 
-## 六（续）、其他问题修复记录
+## 七（续）、其他问题修复记录
 
 ### Agent 名字显示为 "Idle"
 
@@ -808,7 +844,7 @@ func start() {
 
 ---
 
-## 七、编译错误修复历史
+## 八、编译错误修复历史
 
 1. **缺少 `import Foundation`**：AssetLoader.swift 中 `Data`、`Bundle` 找不到 → 添加 `import Foundation`
 2. **类型不匹配 `AgentAssetLoader` vs `AssetLoader?`**：WebViewBridge 中属性声明为 `AssetLoader?` 但赋值 `AgentAssetLoader` → 改为 `AgentAssetLoader?`
@@ -821,7 +857,13 @@ func start() {
 
 ---
 
-## 八、构建与运行
+## 九、构建与运行
+
+### 快速启动（推荐）
+```bash
+cd /Users/xuzhaowen/Documents/xiaomimimo_used/ClaudePixelAgents
+swift run
+```
 
 ### 构建命令
 ```bash
@@ -848,7 +890,7 @@ pkill -f "ClaudePixelAgents"
 
 ---
 
-## 九、外部参考文件
+## 十、外部参考文件
 
 | 用途 | 文件路径 |
 |------|---------|
@@ -867,7 +909,7 @@ pkill -f "ClaudePixelAgents"
 
 ---
 
-## 十、本次会话问题修复记录
+## 十一、本次会话问题修复记录
 
 ### 10.1 "Idle" 文字显示英文而非中文 "等待中"
 
@@ -975,7 +1017,7 @@ private func sendToWebview(_ message: [String: Any]) {
 
 ---
 
-## 十一、待完成事项
+## 十二、待完成事项
 
 - [x] 修复白屏问题 → 本地 HTTP 服务器方案
 - [x] 菜单栏语言切换功能 → 工具栏按钮 + WebViewBridge 消息
