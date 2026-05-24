@@ -1,0 +1,21 @@
+# Build artifacts
+.build/
+DerivedData/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# OS
+.DS_Store
+
+# Swift Package Manager
+.swiftpm/
+
+# Claude Code local settings
+.claude/
+
+# Keep the prebuilt app
+!ClaudePixelAgents.app
+!ClaudePixelAgents.app/
