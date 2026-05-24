@@ -1034,3 +1034,36 @@ private func sendToWebview(_ message: [String: Any]) {
 - [x] 消息顺序 → DispatchQueue.main.sync 保证家具先于布局到达
 - [ ] 欢迎横幅功能（新 agent 入职时显示）
 - [ ] 入职/离职日志面板
+## 十二、下一步计划
+
+接下来拟按优先级完成以下工作：
+
+- 实现 `欢迎横幅`：在新 agent 入职时，在 webview 顶部短暂显示本地化欢迎横幅（可配置时长和样式）。
+- 实现 `入职/离职日志面板`：在主界面或单独窗口显示历史入职/离职记录，支持筛选和导出 JSON。
+- 在 webview 中实现横幅 UI：由 React 端接收 `welcomeBanner` 消息并负责动画/消失逻辑；Swift 端在 AgentTracker 记录入职后发送该消息。
+- 添加测试：单元测试覆盖 `EmploymentLog` 的持久化与恢复，以及 server/webview 消息顺序的集成测试。
+- 更新文档：补充 README & 使用说明，列出新增消息类型与开发调试命令。
+
+## 十三、欢迎横幅实现草案
+
+- 消息协议：Swift 发送 `{"type":"welcomeBanner","id":<agentId>,"name":"<agentName>","role":"<agentRole>","durationMs":3000}`。
+- Webview：接收后在 `App` 顶部弹出横幅组件 `WelcomeBanner`，显示 `欢迎 {name} 加入团队！`（本地化），3s 后淡出；支持点击立即关闭。
+- 可配置项：`durationMs`、是否显示头像（使用角色色块占位）、是否在欢迎横幅期间暂停其他通知。
+- Edge case：当短时间内有多名 agent 入职，横幅进入队列，按到达顺序依次展示；可合并为“同时加入 3 人”等聚合文案。
+
+## 十四、入职/离职日志面板设计草案
+
+- 数据模型：复用 `EmploymentRecord`（已存在），在 `EmploymentLog` 中新增分页与筛选（按日期区间、事件类型、姓名、岗位）。
+- 持久化文件：`~/.pixel-agents/employment-log.json`（已存在），增加导出 API `exportEmploymentLog(path)`。
+- UI：在设置或工具栏添加“记录”按钮，打开 modal，展示表格、搜索框、导出按钮；支持按记录点击查看详细事件时间戳与原始 JSONL 链接（若可用）。
+- 权限与隐私：记录仅保存在本地；导出时提示用户文件路径与格式。
+
+## 十五、回归测试与验证清单
+
+- 验证欢迎横幅在新 agent 创建后优先于 `agentCreated`/`languageLoaded` 的顺序显示本地化文案。
+- 确认 `EmploymentLog` 在应用重启后能恢复历史记录并正确显示。
+- 在 macOS 上测试 LocalServer 与 WKWebView 的加载，确保 `type="module"` 脚本能通过 `http://localhost` 正常加载且 `acquireVsCodeApi` shim 生效。
+
+---
+
+我已把以上草案追加到文档，并建立了接下来的任务清单。需要我现在实现其中某一项（例如：把 `welcomeBanner` 消息发送逻辑加到 `AgentTracker.swift` 并修改 webview React 组件接收）吗？

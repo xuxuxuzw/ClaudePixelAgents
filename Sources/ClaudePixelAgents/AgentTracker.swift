@@ -18,6 +18,7 @@ class AgentTracker {
     private var watchers: [Int: TranscriptWatcher] = [:]
     private var agentStates: [Int: AgentState] = [:]
     private let employmentLog = EmploymentLog()
+    private var didRunInitialScan: Bool = false
 
     init(bridge: WebViewBridge) {
         self.bridge = bridge
@@ -47,14 +48,24 @@ class AgentTracker {
         watchers[agentId]?.stop()
         watchers.removeValue(forKey: agentId)
         knownSessions.removeValue(forKey: sessionId)
-        agentStates.removeValue(forKey: agentId)
+        // Do not remove `agentStates` before recording the fire event
         CoffeeBreak.shared.cancelBreakCheck(agentId: agentId)
 
         if let state = agentStates[agentId] {
             employmentLog.recordFire(name: state.name, role: state.role)
         }
 
+        // Notify webview and then remove state
         sendToWebview(["type": "agentClosed", "id": agentId])
+        agentStates.removeValue(forKey: agentId)
+
+            // After recording a fire event, immediately push the updated employment log to the webview
+            let all = employmentLog.getAllRecords()
+            let mapped = all.map { rec -> [String: Any] in
+                let ms = Int64(rec.time.timeIntervalSince1970 * 1000.0)
+                return ["event": rec.event.rawValue, "role": rec.role, "name": rec.name, "time": ms]
+            }
+            sendToWebview(["type": "employmentLog", "records": mapped])
     }
 
     func handleAgentSeats(_ seats: [String: Any]) {
@@ -107,24 +118,38 @@ class AgentTracker {
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: timeoutItem)
 
-        // 读取输出（必须在waitUntilExit之前）
+        // 读取输出（必须在 waitUntilExit 之前）
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
 
+        // 取消超时并等待进程退出，以便记录退出状态
         timeoutItem.cancel()
         task.waitUntilExit()
         NSLog("[AgentTracker] claude agents exited with status \(task.terminationStatus)")
 
-        let output = String(data: data, encoding: .utf8) ?? "nil"
-        let errorOutput = String(data: errorData, encoding: .utf8) ?? "nil"
-        NSLog("[AgentTracker] claude agents output: \(output.prefix(300))")
-        NSLog("[AgentTracker] claude agents stderr: \(errorOutput.prefix(300))")
+        let output = String(data: data, encoding: .utf8) ?? ""
+        let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+        if !errorOutput.isEmpty {
+            NSLog("[AgentTracker] claude agents stderr: \(errorOutput.prefix(500))")
+        }
+        NSLog("[AgentTracker] claude agents stdout length: \(data.count), stderr length: \(errorData.count)")
+        NSLog("[AgentTracker] claude agents output: \(output.prefix(1000))")
 
         guard let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            NSLog("[AgentTracker] Failed to parse agents JSON")
+            NSLog("[AgentTracker] Failed to parse agents JSON — raw output below:\n\(output)")
             return
         }
         NSLog("[AgentTracker] Found \(sessions.count) sessions")
+
+        // Debug: enumerate background sessions found
+        var bgIds: [String] = []
+        for sessionDict in sessions {
+            if let kind = sessionDict["kind"] as? String, kind == "background",
+               let sid = sessionDict["sessionId"] as? String {
+                bgIds.append(sid)
+            }
+        }
+        NSLog("[AgentTracker] Background sessionIds: \(bgIds)")
 
         var currentSessionIds = Set<String>()
 
@@ -147,15 +172,29 @@ class AgentTracker {
                 let state = AgentState(id: agentId, sessionId: sessionId, name: name, role: role)
                 agentStates[agentId] = state
 
-                employmentLog.recordHire(name: name, role: role)
+                // Extract startedAt (milliseconds since epoch) from session metadata when available
+                var startedAtMs: Int64? = nil
+                if let n = sessionDict["startedAt"] as? Int64 {
+                    startedAtMs = n
+                } else if let d = sessionDict["startedAt"] as? Double {
+                    startedAtMs = Int64(d)
+                } else if let num = sessionDict["startedAt"] as? NSNumber {
+                    startedAtMs = num.int64Value
+                } else if let s = sessionDict["startedAt"] as? String, let d = Double(s) {
+                    startedAtMs = Int64(d)
+                }
 
-                sendToWebview([
+                employmentLog.recordHire(name: name, role: role, timeMs: startedAtMs)
+
+                // Send creation messages in a deterministic order
+                sendToWebviewSync([
                     "type": "agentCreated",
                     "id": agentId,
                 ])
 
+
                 // Send agent name via AgentTeamInfo (the protocol's way to set agent names)
-                sendToWebview([
+                sendToWebviewSync([
                     "type": "agentTeamInfo",
                     "id": agentId,
                     "agentName": name,
@@ -163,11 +202,24 @@ class AgentTracker {
                 ])
 
                 // Set initial status to 'waiting' (idle)
-                sendToWebview([
+                sendToWebviewSync([
                     "type": "agentStatus",
                     "id": agentId,
                     "status": "waiting",
                 ])
+
+                // Send welcome banner only for agents created after initial scan
+                if didRunInitialScan {
+                    sendToWebviewSync([
+                        "type": "welcomeBanner",
+                        "id": agentId,
+                        "name": name,
+                        "role": role,
+                        "durationMs": 3000,
+                    ])
+                } else {
+                    NSLog("[AgentTracker] Skipping welcomeBanner for initial agent \(agentId): \(name)")
+                }
 
                 startWatching(agentId: agentId, sessionId: sessionId, cwd: sessionDict["cwd"] as? String ?? "")
                 CoffeeBreak.shared.scheduleBreakCheck(agentId: agentId, bridge: bridge)
@@ -176,6 +228,12 @@ class AgentTracker {
                 // Re-send language strings directly (before agentCreated reaches webview)
                 bridge?.sendLanguageToWebviewDirect()
             }
+        }
+
+        // Mark that the initial seed scan has completed; subsequent polls should show welcome banners
+        if !didRunInitialScan {
+            didRunInitialScan = true
+            NSLog("[AgentTracker] Initial agent scan completed; future new agents will show welcome banners")
         }
 
         for (sessionId, agentId) in knownSessions {
@@ -193,6 +251,14 @@ class AgentTracker {
                 sendToWebview(["type": "agentClosed", "id": agentId])
                 print("[AgentTracker] Agent \(agentId) closed")
                 updateAgentCount()
+
+                    // push updated employment log after fire
+                    let all2 = employmentLog.getAllRecords()
+                    let mapped2 = all2.map { rec -> [String: Any] in
+                        let ms = Int64(rec.time.timeIntervalSince1970 * 1000.0)
+                        return ["event": rec.event.rawValue, "role": rec.role, "name": rec.name, "time": ms]
+                    }
+                    sendToWebview(["type": "employmentLog", "records": mapped2])
             }
         }
     }
@@ -252,6 +318,13 @@ class AgentTracker {
 
     private func sendToWebview(_ message: [String: Any]) {
         DispatchQueue.main.async { [weak self] in
+            self?.bridge?.sendToWebview(message)
+        }
+    }
+
+    /// Synchronous send to webview to preserve message ordering when called from background threads.
+    private func sendToWebviewSync(_ message: [String: Any]) {
+        DispatchQueue.main.sync { [weak self] in
             self?.bridge?.sendToWebview(message)
         }
     }

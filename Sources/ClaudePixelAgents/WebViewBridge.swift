@@ -152,6 +152,7 @@ extension WebViewBridge: WKScriptMessageHandler {
               let type = json["type"] as? String else {
             return
         }
+        NSLog("[WebViewBridge] received message body: \(json)")
         switch type {
         case "webviewReady":
             NSLog("[WebViewBridge] Webview ready")
@@ -172,6 +173,44 @@ extension WebViewBridge: WKScriptMessageHandler {
                let language = Language(rawValue: lang) {
                 Localization.shared.currentLanguage = language
                 sendLanguageToWebview()
+            }
+        case "requestEmploymentLog":
+                // Read the employment log file, convert Date -> milliseconds, and send to webview
+                let expanded = (NSHomeDirectory() as NSString).appendingPathComponent(".pixel-agents/employment-log.json")
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: expanded)),
+                   let decoded = try? JSONDecoder().decode([EmploymentRecord].self, from: data) {
+                    let mapped = decoded.map { rec -> [String: Any] in
+                        let ms = Int64(rec.time.timeIntervalSince1970 * 1000.0)
+                        return ["event": rec.event.rawValue, "role": rec.role, "name": rec.name, "time": ms]
+                    }
+                    sendToWebview(["type": "employmentLog", "records": mapped])
+                } else {
+                    sendToWebview(["type": "employmentLog", "records": []])
+                }
+        case "exportEmploymentLog":
+                // Read the employment log file, serialize, copy to clipboard, and notify webview
+                let expanded = (NSHomeDirectory() as NSString).appendingPathComponent(".pixel-agents/employment-log.json")
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: expanded)),
+                   let decoded = try? JSONDecoder().decode([EmploymentRecord].self, from: data) {
+                    let mapped = decoded.map { rec -> [String: Any] in
+                        let ms = Int64(rec.time.timeIntervalSince1970 * 1000.0)
+                        return ["event": rec.event.rawValue, "role": rec.role, "name": rec.name, "time": ms]
+                    }
+                    // Copy to clipboard (NSPasteboard)
+                    if let jsonData = try? JSONSerialization.data(withJSONObject: mapped, options: [.prettyPrinted]) , let jsonString = String(data: jsonData, encoding: .utf8) {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(jsonString, forType: .string)
+                        sendToWebview(["type": "employmentExportResult", "success": true])
+                    } else {
+                        sendToWebview(["type": "employmentExportResult", "success": false, "error": "serialize_failed"]) 
+                    }
+                } else {
+                    sendToWebview(["type": "employmentExportResult", "success": false, "error": "no_file_or_parse"])
+                }
+        case "employmentStyleDebug":
+            if let data = json["data"] {
+                NSLog("[WebViewBridge] employmentStyleDebug: \(data)")
             }
         default:
             break

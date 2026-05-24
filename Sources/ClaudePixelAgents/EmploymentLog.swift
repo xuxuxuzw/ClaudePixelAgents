@@ -23,11 +23,17 @@ class EmploymentLog {
         load()
     }
 
-    func recordHire(name: String, role: String) {
-        let record = EmploymentRecord(time: Date(), name: name, role: role, event: .hire)
+    func recordHire(name: String, role: String, timeMs: Int64? = nil) {
+        let time: Date
+        if let ms = timeMs {
+            time = Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
+        } else {
+            time = Date()
+        }
+        let record = EmploymentRecord(time: time, name: name, role: role, event: .hire)
         records.append(record)
         save()
-        print("[EmploymentLog] HIRE: \(name) (\(role))")
+        print("[EmploymentLog] HIRE: \(name) (\(role)) at \(time)")
     }
 
     func recordFire(name: String, role: String) {

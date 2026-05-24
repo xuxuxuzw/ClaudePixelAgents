@@ -7,8 +7,225 @@
     <title>webview-ui</title>
     <script type="module" crossorigin src="./assets/index-eb83dqGe.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-Q2fe2iQi.css">
+    <style>
+      /* Ensure employment log uses consistent font size and numeric layout */
+      #employment-list {
+        font-size: 16px !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Noto Sans SC", Arial, sans-serif !important;
+        -webkit-font-smoothing: antialiased !important;
+        -moz-osx-font-smoothing: grayscale !important;
+        font-variant-numeric: tabular-nums !important;
+        font-feature-settings: "tnum" 1 !important;
+      }
+      #employment-list .employment-entry { font-size: 16px;padding:8px; border-bottom:1px solid rgba(255,255,255,0.03); }
+      #employment-list .employment-name { font-size: 16px;font-weight:600; }
+      #employment-list .employment-meta { font-size: 16px;font-weight:600;color:#9aa0b4; font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="welcome-banner" style="display:none;position:fixed;left:50%;transform:translateX(-50%);top:20px;z-index:9999;padding:12px 20px;border-radius:6px;background:rgba(30,30,40,0.95);color:#fff;font-family:Arial,Helvetica,sans-serif;box-shadow:0 6px 18px rgba(0,0,0,0.4);">
+      <span id="welcome-text"></span>
+      <button id="welcome-close" style="margin-left:12px;background:transparent;border:0;color:#fff;cursor:pointer;font-weight:600;">✕</button>
+    </div>
+    <button id="open-employment-log" style="position:fixed;right:16px;top:16px;z-index:9998;padding:8px 10px;border-radius:6px;border:0;background:#2b2b3a;color:#fff;cursor:pointer;font-family:Arial,Helvetica,sans-serif;">记录</button>
+    <div id="employment-modal" style="display:none;position:fixed;left:50%;top:80px;transform:translateX(-50%);width:760px;max-height:70vh;overflow:auto;background:rgba(20,20,28,0.98);color:#fff;border-radius:8px;padding:12px;z-index:10000;box-shadow:0 10px 30px rgba(0,0,0,0.6);font-family:Arial,Helvetica,sans-serif;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <strong>入职/离职记录</strong>
+        <div>
+          <button id="export-employment" style="margin-right:8px;background:transparent;border:1px solid rgba(255,255,255,0.08);color:#fff;padding:6px 8px;border-radius:6px;cursor:pointer;">复制记录到剪贴板</button>
+          <button id="close-employment" style="background:transparent;border:0;color:#fff;cursor:pointer;font-weight:600;">✕</button>
+        </div>
+      </div>
+      <div id="employment-list" style="font-size:16px;line-height:1.4;color:#e6e6e6;"></div>
+    </div>
+    <script>
+      (function(){
+          const banner = document.getElementById('welcome-banner');
+          const text = document.getElementById('welcome-text');
+        const closeBtn = document.getElementById('welcome-close');
+        let queue = [];
+        let showing = false;
+          let currentLanguage = 'en';
+
+        function showNext() {
+          if (showing) return;
+          const item = queue.shift();
+          if (!item) return;
+          showing = true;
+          const name = item.name || 'Agent';
+          const role = item.role ? (' · ' + item.role) : '';
+          const lang = item.language || currentLanguage || 'en';
+          text.textContent = (lang === 'zh' ? '欢迎 ' : 'Welcome ') + name + role + (lang === 'zh' ? ' 加入团队！' : ' to the team!');
+          banner.style.display = 'block';
+          banner.style.opacity = '0';
+          banner.style.transition = 'opacity 220ms ease, transform 220ms ease';
+          banner.style.transform = 'translateX(-50%) translateY(-8px)';
+          requestAnimationFrame(() => { banner.style.opacity = '1'; banner.style.transform = 'translateX(-50%) translateY(0)'; });
+
+          const duration = (item.durationMs && Number(item.durationMs)) || 3000;
+          const timeout = setTimeout(() => { hide(() => { showing = false; showNext(); }); }, duration);
+
+          closeBtn.onclick = () => { clearTimeout(timeout); hide(() => { showing = false; showNext(); }); };
+        }
+
+        function hide(cb) {
+          banner.style.opacity = '0';
+          banner.style.transform = 'translateX(-50%) translateY(-8px)';
+          setTimeout(() => { banner.style.display = 'none'; cb && cb(); }, 240);
+        }
+
+        function ensureEmploymentStyle() {
+          if (!document.getElementById('employment-log-fix')) {
+            const s = document.createElement('style');
+            s.id = 'employment-log-fix';
+            s.textContent = '#employment-list { font-size: 16px !important; } #employment-list .employment-name { font-size: 16px; font-weight:600; } #employment-list .employment-meta { font-size: 16px; font-weight:600; color:#9aa0b4; }';
+            document.head.appendChild(s);
+          }
+        }
+
+        window.addEventListener('message', (e) => {
+          try {
+            const msg = e.data;
+            if (!msg || typeof msg !== 'object') return;
+            // Update language strings when host sends localization
+            if (msg.type === 'languageLoaded') {
+              if (msg.language) currentLanguage = msg.language;
+              return;
+            }
+            if (msg.type === 'welcomeBanner') {
+              queue.push(msg);
+              showNext();
+            }
+            if (msg.type === 'employmentLog') {
+              ensureEmploymentStyle();
+              const list = document.getElementById('employment-list');
+              if (!list) return;
+              const records = Array.isArray(msg.records) ? msg.records : [];
+              if (records.length === 0) {
+                list.innerHTML = '<div style="padding:8px;color:#ccc;">无记录</div>';
+              } else {
+                function formatDate(d){
+                  const pad = n => String(n).padStart(2,'0');
+                  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                }
+                const html = records.map(r => {
+                  const t = new Date(r.time);
+                  const ts = formatDate(t)+" ";
+                  const ev = r.event === 'hire' ? '入职' : (r.event === 'fire' ? '离职' : r.event);
+                      const ff = "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Noto Sans SC', Arial, sans-serif";
+                      const numFeatures = 'font-variant-numeric:tabular-nums; font-feature-settings: "tnum" 1;';
+                      return `<div class="employment-entry" style="font-size:16px;">`+
+                        `<div class="employment-name" style="font-size:16px;font-weight:600;font-family:${ff};${numFeatures}">${r.name} · ${r.role}</div>`+
+                        `<div class="employment-meta" style="font-size:16px;font-weight:600;color:#9aa0b4;font-family:${ff};${numFeatures}">${ts} — ${ev}</div>`+
+                        `</div>`;
+                }).join('');
+                list.innerHTML = html;
+              }
+              // ensure inline fallback styles for stubborn overrides
+              const entries = list.querySelectorAll('.employment-entry');
+              entries.forEach(en => {
+                en.style.setProperty('font-size', '16px', 'important');
+                en.style.setProperty('font-weight', '600', 'important');
+                const ff = "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Noto Sans SC', Arial, sans-serif";
+                const numFeatures = {'font-variant-numeric':'tabular-nums','font-feature-settings':'"tnum" 1'};
+                const nn = en.querySelector('.employment-name'); if (nn) { nn.style.setProperty('font-size', '16px', 'important'); nn.style.setProperty('font-weight', '600', 'important'); nn.style.setProperty('font-family', ff, 'important'); nn.style.setProperty('font-variant-numeric', 'tabular-nums', 'important'); nn.style.setProperty('font-feature-settings', '"tnum" 1', 'important'); }
+                const mm = en.querySelector('.employment-meta'); if (mm) { mm.style.setProperty('font-size', '16px', 'important'); mm.style.setProperty('font-weight', '600', 'important'); mm.style.setProperty('font-family', ff, 'important'); mm.style.setProperty('font-variant-numeric', 'tabular-nums', 'important'); mm.style.setProperty('font-feature-settings', '"tnum" 1', 'important'); }
+              });
+
+              // Do not automatically open the modal when employmentLog arrives.
+              // Only update the list; user may open the modal manually via the "记录" button.
+              // document.getElementById('employment-modal').style.display = 'block';
+
+              // collect computed styles and send to host for debugging
+              try {
+                const debugData = [];
+                entries.forEach((en, idx) => {
+                  const nameEl = en.querySelector('.employment-name');
+                  const metaEl = en.querySelector('.employment-meta');
+                  const csName = nameEl ? window.getComputedStyle(nameEl) : null;
+                  const csMeta = metaEl ? window.getComputedStyle(metaEl) : null;
+                  debugData.push({
+                    index: idx,
+                    nameInlineFontSize: nameEl ? nameEl.style.fontSize : null,
+                    metaInlineFontSize: metaEl ? metaEl.style.fontSize : null,
+                    nameFontSize: csName ? csName.fontSize : null,
+                    nameLineHeight: csName ? csName.lineHeight : null,
+                    metaFontSize: csMeta ? csMeta.fontSize : null,
+                    metaLineHeight: csMeta ? csMeta.lineHeight : null,
+                    nameFontFamily: csName ? csName.fontFamily : null
+                  });
+                });
+                const payload = { type: 'employmentStyleDebug', data: debugData };
+                if (window.acquireVsCodeApi) {
+                  try { window.acquireVsCodeApi().postMessage(payload); } catch (e) { /* ignore */ }
+                }
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.host) {
+                  try { window.webkit.messageHandlers.host.postMessage(payload); } catch (e) { /* ignore */ }
+                }
+              } catch (e) {
+                console.error('style debug failed', e);
+              }
+            }
+            // Forward other messages to app if needed
+          } catch (err) { console.error('welcomeBanner handler error', err); }
+        });
+
+        // open employment log button handler
+        const openBtn = document.getElementById('open-employment-log');
+        if (openBtn) {
+          openBtn.onclick = () => {
+              // Open the modal immediately so the user sees feedback while host responds
+              const modal = document.getElementById('employment-modal');
+              if (modal) modal.style.display = 'block';
+              if (typeof acquireVsCodeApi === 'function') {
+                acquireVsCodeApi().postMessage({ type: 'requestEmploymentLog' });
+              } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.claudePixelAgents) {
+                window.webkit.messageHandlers.claudePixelAgents.postMessage(JSON.stringify({ type: 'requestEmploymentLog' }));
+              } else {
+                console.warn('requestEmploymentLog: no postMessage available');
+              }
+            };
+        }
+        const closeEmployment = document.getElementById('close-employment');
+        if (closeEmployment) closeEmployment.onclick = () => { document.getElementById('employment-modal').style.display = 'none'; };
+        const exportBtn = document.getElementById('export-employment');
+        if (exportBtn) exportBtn.onclick = () => {
+          // Open modal so user sees feedback
+          const modal = document.getElementById('employment-modal'); if (modal) modal.style.display = 'block';
+          // Send export request to host which will copy to system clipboard
+          const sendExport = () => {
+            if (typeof acquireVsCodeApi === 'function') {
+              acquireVsCodeApi().postMessage({ type: 'exportEmploymentLog' });
+            } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.claudePixelAgents) {
+              window.webkit.messageHandlers.claudePixelAgents.postMessage(JSON.stringify({ type: 'exportEmploymentLog' }));
+            } else {
+              console.warn('exportEmploymentLog: no postMessage available');
+            }
+          };
+
+          const onExportResult = (ev) => {
+            try {
+              const msg = ev.data;
+              if (!msg || typeof msg !== 'object') return;
+                if (msg.type === 'employmentExportResult') {
+                if (msg.success) {
+                  alert('复制成功');
+                } else {
+                  alert('复制失败：' + (msg.error || 'unknown'));
+                }
+                window.removeEventListener('message', onExportResult);
+              }
+            } catch (e) { console.error('export result handler', e); }
+          };
+
+          window.addEventListener('message', onExportResult);
+          sendExport();
+
+          // Fallback if no response in 2s
+          setTimeout(() => { window.removeEventListener('message', onExportResult); alert('复制超时：请检查应用日志'); }, 2000);
+        };
+      })();
+    </script>
   </body>
 </html>
